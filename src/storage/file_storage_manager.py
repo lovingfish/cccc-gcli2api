@@ -64,6 +64,7 @@ class FileStorageManager:
     STATE_FIELDS = {
         "error_codes", "disabled", "last_success", "user_email",
         "gemini_2_5_pro_calls", "total_calls", "next_reset_time",
+        "temp_disabled_until",  # <--- 添加缺失的字段
         "daily_limit_gemini_2_5_pro", "daily_limit_total"
     }
     
