@@ -5,6 +5,7 @@ creds/
 
 # Environment configuration
 .env
+mm.txt
 
 # Python
 uv.lock
