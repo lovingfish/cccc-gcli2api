@@ -107,19 +107,26 @@ class CredentialManager:
     async def _background_worker(self):
         """后台工作线程，处理定期任务"""
         try:
+            last_discovery_time = time.time()
             while not self._shutdown_event.is_set():
                 try:
-                    # 每60秒检查一次凭证更新
-                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=60.0)
+                    # 默认等待10秒
+                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=10.0)
                     if self._shutdown_event.is_set():
                         break
 
-                    # 重新发现凭证（热更新）
-                    await self._discover_credentials()
+                    # 每10秒执行一次禁用恢复检查
+                    await self._recover_expired_temp_bans()
+
+                    # 每60秒执行一次凭证发现
+                    current_time = time.time()
+                    if current_time - last_discovery_time >= 60.0:
+                        await self._discover_credentials()
+                        last_discovery_time = current_time
 
                 except asyncio.TimeoutError:
                     # 超时是正常的，继续下一轮
-                    continue
+                    pass
                 except asyncio.CancelledError:
                     # 任务被取消，正常退出
                     log.debug("Background worker cancelled, exiting gracefully")
@@ -139,7 +146,6 @@ class CredentialManager:
         try:
             # 1. 从存储中获取所有凭证文件和状态
             all_credentials_from_storage = await self._storage_adapter.list_credentials()
-            all_states = await self._storage_adapter.get_all_credential_states()
 
             # 新增：清理僵尸凭证（内容为空或无效的凭证）
             try:
@@ -172,23 +178,8 @@ class CredentialManager:
             except Exception as e:
                 log.error(f"清理僵尸凭证时发生错误: {e}")
 
-            # 2. 处理禁用恢复逻辑
-            for cred_name in all_credentials_from_storage:
-                state = all_states.get(cred_name, {})
-                if not state.get("disabled", False):
-                    continue
-
-                # 统一恢复逻辑：只检查temp_disabled_until
-                temp_disabled_until = state.get("temp_disabled_until")
-                if temp_disabled_until and time.time() > temp_disabled_until:
-                    china_tz = timezone(timedelta(hours=8))
-                    human_readable_time = datetime.fromtimestamp(temp_disabled_until, tz=china_tz).strftime('%Y-%m-%d %H:%M:%S')
-                    log.info(f"凭证 {cred_name} 的临时禁用已到期（解禁时间: {human_readable_time} 北京时间），恢复。")
-                    await self.update_credential_state(cred_name, {
-                        "disabled": False,
-                        "temp_disabled_until": None,
-                        "error_codes": [],
-                    })
+            # 2. 恢复过期的临时禁用
+            await self._recover_expired_temp_bans()
 
             # 3. 更新内存中的凭证文件列表 (只增不减)
             is_initial_load = self._last_scan_time == 0
@@ -209,6 +200,29 @@ class CredentialManager:
 
         except Exception as e:
             log.error(f"发现凭证时出错: {e}")
+
+    async def _recover_expired_temp_bans(self):
+        """恢复所有已过期的临时禁用凭证"""
+        try:
+            all_states = await self._storage_adapter.get_all_credential_states()
+
+            for cred_name, state in all_states.items():
+                if not state.get("disabled", False):
+                    continue
+
+                temp_disabled_until = state.get("temp_disabled_until")
+                if temp_disabled_until and time.time() > temp_disabled_until:
+                    china_tz = timezone(timedelta(hours=8))
+                    human_readable_time = datetime.fromtimestamp(temp_disabled_until, tz=china_tz).strftime('%Y-%m-%d %H:%M:%S')
+                    log.info(f"凭证 {cred_name} 的临时禁用已到期（解禁时间: {human_readable_time} 北京时间），恢复。")
+                    await self.update_credential_state(cred_name, {
+                        "disabled": False,
+                        "temp_disabled_until": None,
+                        "error_codes": [],
+                    })
+        except Exception as e:
+            log.error(f"恢复过期临时禁用时出错: {e}")
+
 
     async def _load_credential_by_name(self, credential_name: str) -> Optional[Dict[str, Any]]:
         """加载指定名称的凭证数据，包含token过期检测和自动刷新"""
